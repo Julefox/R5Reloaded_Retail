@@ -1,0 +1,21 @@
+IsTestMap: true
+
+When: "SERVER"
+Scripts:
+[
+    mp/levels/mp_rr_floppytown/mp_rr_floppytown.nut
+    mp/levels/mp_rr_floppytown/mp_rr_floppytown_map.nut
+]
+
+When: "CLIENT"
+Scripts:
+[
+    mp/levels/mp_rr_floppytown/cl_mp_rr_floppytown.nut
+]
+
+When: "SERVER || CLIENT"
+Scripts:
+[
+    mp/levels/mp_rr_floppytown/mp_rr_floppytown_common.nut
+    mp/levels/mp_rr_floppytown/sh_developper.nut
+]
