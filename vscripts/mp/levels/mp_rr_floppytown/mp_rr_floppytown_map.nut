@@ -6,6 +6,11 @@ global function Floppytown_MapInit_Map
 
 void function Floppytown_MapInit_Map()
 {
+    AddCallback_EntitiesDidLoad( Floppytown )
+}
+
+void function Floppytown()
+{
     //Starting Origin, Change this to a origin in a map 
     vector originOffset = < 2000, 2000, 6000 >
 
@@ -29,7 +34,20 @@ void function Floppytown_MapInit_Map()
         bool mantle = GetDataTableBool( dataTable, i, mantleColumn )
         asset mdl = GetDataTableAsset( dataTable, i, mdlColumn )
 
-        MapEditor_CreateProp( mdl, origin + originOffset, angles, mantle, fade, -1, scale )
-    }
+        if ( mdl == $"mdl/dev/yes.rmdl" )
+        {
+            ZiplineUtility zipline
 
+            string us = UniqueString( "Zipline" )
+
+            zipline = Zipline_Register( us, origin + originOffset, angles )
+                Zipline_SetSkin( zipline, eZiplineSkinType.INVISIBLE )
+            RegisteredZipline_Init( zipline )
+            printt( angles )
+        }
+        else
+        {
+            MapEditor_CreateProp( mdl, origin + originOffset, angles, mantle, fade, -1, scale )
+        }
+    }
 }
