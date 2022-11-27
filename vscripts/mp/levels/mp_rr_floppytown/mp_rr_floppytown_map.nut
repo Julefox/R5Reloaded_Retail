@@ -34,20 +34,6 @@ void function Floppytown()
         bool mantle = GetDataTableBool( dataTable, i, mantleColumn )
         asset mdl = GetDataTableAsset( dataTable, i, mdlColumn )
 
-        if ( mdl == $"mdl/dev/yes.rmdl" )
-        {
-            ZiplineUtility zipline
-
-            string us = UniqueString( "Zipline" )
-
-            zipline = Zipline_Register( us, origin + originOffset, angles )
-                Zipline_SetSkin( zipline, eZiplineSkinType.INVISIBLE )
-            RegisteredZipline_Init( zipline )
-            printt( angles )
-        }
-        else
-        {
-            MapEditor_CreateProp( mdl, origin + originOffset, angles, mantle, fade, -1, scale )
-        }
+        MapEditor_CreateProp( mdl, origin + originOffset, angles, mantle, fade, -1, scale )
     }
 }
