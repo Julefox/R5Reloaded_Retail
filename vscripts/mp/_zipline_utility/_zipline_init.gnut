@@ -35,7 +35,7 @@ void function OnMapZipline_Init() // Explanation at the end of the file
         case "mp_rr_desertlands_64k_x_64k":
             break
         case "mp_rr_floppytown":
-            vector originOffset = < 2000, 2000, 6000 >
+            /* vector originOffset = < 2000, 2000, 6000 >
 
             var dataTable = GetDataTable( $"datatable/mp_rr_floppytown_zipline.rpak" )
             int numRows = GetDatatableRowCount( dataTable )
@@ -80,7 +80,9 @@ void function OnMapZipline_Init() // Explanation at the end of the file
                 bool isMoving = GetDataTableBool( dataTable, i, isMovingColumn )
 
                 CreateZiplineByUnityEditor( originStart + originOffset, anglesStart, originEnd + originOffset, anglesEnd, isVertical, fadeDistance, scale, width, speedScale, lengthScale, preserveVelocity, disableDropToBottom, startAutoDetachDistance, endAutoDetachDistance, restPoint, pushOffInDirectionX, isMoving )
-            }
+            } */
+            vector mo = < 2000, 2000, 6000 >
+            CreateZiplineByUnityEditor( < -2109.9990, -1994.0010, 2586.0000 > + mo, < 0, -90, 0 >, < -2109.9990, -1994.0010, 35.0000 > + mo, < 0, -90, 0 >, true, -1, 1.0, 1.0, 1.0, 1.0, false, true, 100.0, 50.0, false, true, true, [ < -1974.0030, -2038.7510, 52.0000 > + mo, < -1976.9990, -2058.0010, 2368.9000 > + mo ], [ < 0.0000, 90.0000, 0.0000 >, < 0.0000, -90.0000, 0.0000 > ], [ ePanelSkinType.WALL, ePanelSkinType.WALL ] )
             break
         default: break
     }
