@@ -49,7 +49,7 @@ void function Nessy()
 
     if ( origin.len() != angles.len() ) return
 
-    int numLocation = RandomIntRangeInclusive( 0, origin.len() - 1 )
+    int numLocation = RandomIntRange( 0, origin.len() )
 
     CreatePropDynamic( NESSY_MODEL, origin[numLocation] + MAP_OFFSET, angles[numLocation], 6, -1 )
 }
