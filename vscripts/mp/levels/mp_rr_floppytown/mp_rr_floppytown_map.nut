@@ -3,17 +3,19 @@ untyped
 
 global function Floppytown_MapInit_Map
 
+const vector MAP_OFFSET = < 2000, 2000, 6000 >
+
+const asset NESSY_MODEL = $"mdl/domestic/nessy_doll.rmdl"
+
 
 void function Floppytown_MapInit_Map()
 {
     AddCallback_EntitiesDidLoad( Floppytown )
+    AddCallback_EntitiesDidLoad( Nessy )
 }
 
 void function Floppytown()
 {
-    //Starting Origin, Change this to a origin in a map 
-    vector originOffset = < 2000, 2000, 6000 >
-
     var dataTable = GetDataTable( $"datatable/mp_rr_floppytown.rpak" )
     int numRows = GetDatatableRowCount( dataTable )
 
@@ -34,6 +36,20 @@ void function Floppytown()
         bool mantle = GetDataTableBool( dataTable, i, mantleColumn )
         asset mdl = GetDataTableAsset( dataTable, i, mdlColumn )
 
-        MapEditor_CreateProp( mdl, origin + originOffset, angles, mantle, fade, -1, scale )
+        MapEditor_CreateProp( mdl, origin + MAP_OFFSET, angles, mantle, fade, -1, scale )
     }
+}
+
+void function Nessy()
+{
+    PrecacheModel( NESSY_MODEL )
+
+    array < vector > origin = [ < -3008.3000, 2149.9300, 1709.7700 > ]
+    array < vector > angles = [ < 0.0000, -114.3300, 0.0000 > ]
+
+    if ( origin.len() != angles.len() ) return
+
+    int numLocation = RandomIntRangeInclusive( 0, origin.len() - 1 )
+
+    CreatePropDynamic( NESSY_MODEL, origin[numLocation] + MAP_OFFSET, angles[numLocation], 6, -1 )
 }
