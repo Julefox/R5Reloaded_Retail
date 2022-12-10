@@ -1,34 +1,31 @@
+untyped
+// Only way to get Hud_GetPos(sliderButton) working was to use untyped
+
 global function InitR5RServerBrowserPanel
 global function InitR5RConnectingPanel
 
-global function ServerBrowser_EnableRefreshButton
 global function ServerBrowser_RefreshServerListing
-global function ServerBrowser_JoinServer
-global function ServerBrowser_RefreshServersForEveryone
+global function RegisterServerBrowserButtonPressedCallbacks
+global function UnRegisterServerBrowserButtonPressedCallbacks
+global function ServerBrowser_UpdateFilterLists
 
 //Used for max items for page
 //Changing this requires a bit of work to get more to show correctly
 //So keep at 19
-const SB_MAX_SERVER_PER_PAGE = 19
+const SB_MAX_SERVER_PER_PAGE = 15
+
+// Stores mouse delta used for scroll bar
+struct {
+	int deltaX = 0
+	int deltaY = 0
+} mouseDeltaBuffer
 
 struct
 {
-	var menu
-	var panel
-	var connectingpanel
-
-	bool IsFiltered = false
-} file
-
-//Struct for page system
-struct
-{
-	int pAmount
-	int pCurrent
-	int pOffset
-	int pStart
-	int pEnd
-} m_vPages
+	int Offset = 0
+	int Start = 0
+	int End = 0
+} m_vScroll
 
 //Struct for selected server
 struct SelectedServerInfo
@@ -52,13 +49,31 @@ struct ServerListing
 	int svCurrentPlayers
 }
 
-//Arrays for server listing
-array<ServerListing> m_vServerList
-array<ServerListing> m_vFilteredServerList
-//Used for what server you selected
-SelectedServerInfo m_vSelectedServer
-//Used for all player count
-int m_vAllPlayers
+struct {
+	bool hideEmpty = false
+	bool useSearch = false
+	string searchTerm
+	array<string> filterMaps
+	string filterMap = "Any"
+	array<string> filterGamemodes
+	string filterGamemode = "Any"
+} filterArguments
+
+struct
+{
+	var menu
+	var panel
+	var connectingpanel
+
+	bool IsFiltered = false
+
+	int m_vAllPlayers
+	int m_vAllServers
+
+	SelectedServerInfo m_vSelectedServer
+	array<ServerListing> m_vServerList
+	array<ServerListing> m_vFilteredServerList
+} file
 
 void function InitR5RConnectingPanel( var panel )
 {
@@ -70,15 +85,20 @@ void function InitR5RServerBrowserPanel( var panel )
 	file.panel = panel
 	file.menu = GetParentMenu( file.panel )
 
-	//Setup Page Nav Buttons
-	Hud_AddEventHandler( Hud_GetChild( file.panel, "BtnServerListRightArrow" ), UIE_CLICK, ServerBrowser_NextPage )
-	Hud_AddEventHandler( Hud_GetChild( file.panel, "BtnServerListLeftArrow" ), UIE_CLICK, ServerBrowser_PrevPage )
-	//Setup Connect Button
+	AddMouseMovementCaptureHandler( Hud_GetChild(file.panel, "MouseMovementCapture"), UpdateMouseDeltaBuffer )
 	Hud_AddEventHandler( Hud_GetChild( file.panel, "ConnectButton" ), UIE_CLICK, ServerBrowser_ConnectBtnClicked )
-	//Setup Refresh Button
 	Hud_AddEventHandler( Hud_GetChild( file.panel, "RefreshServers" ), UIE_CLICK, ServerBrowser_RefreshBtnClicked )
+	Hud_AddEventHandler( Hud_GetChild( file.panel, "ClearFliters" ), UIE_CLICK, FilterServer_Activate )
+	Hud_AddEventHandler( Hud_GetChild( file.panel, "BtnServerListDownArrow" ), UIE_CLICK, OnScrollDown )
+	Hud_AddEventHandler( Hud_GetChild( file.panel, "BtnServerListUpArrow" ), UIE_CLICK, OnScrollUp )
+	AddButtonEventHandler( Hud_GetChild( file.panel, "BtnServerSearch"), UIE_CHANGE, ServerBrowser_FilterTextChanged )
 
-	AddButtonEventHandler( Hud_GetChild( file.panel, "BtnFilterServers"), UIE_CHANGE, ServerBrowser_FilterTextChanged )
+	Hud_AddEventHandler( Hud_GetChild( Hud_GetChild( file.panel, "SwtBtnHideEmpty" ), "LeftButton" ), UIE_CLICK, FilterServer_Activate )
+	Hud_AddEventHandler( Hud_GetChild( Hud_GetChild( file.panel, "SwtBtnHideEmpty" ), "RightButton" ), UIE_CLICK, FilterServer_Activate )
+	Hud_AddEventHandler( Hud_GetChild( Hud_GetChild( file.panel, "SwtBtnSelectGamemode" ), "LeftButton" ), UIE_CLICK, FilterServer_Activate )
+	Hud_AddEventHandler( Hud_GetChild( Hud_GetChild( file.panel, "SwtBtnSelectGamemode" ), "RightButton" ), UIE_CLICK, FilterServer_Activate )
+	Hud_AddEventHandler( Hud_GetChild( Hud_GetChild( file.panel, "SwtBtnSelectMap" ), "LeftButton" ), UIE_CLICK, FilterServer_Activate )
+	Hud_AddEventHandler( Hud_GetChild( Hud_GetChild( file.panel, "SwtBtnSelectMap" ), "RightButton" ), UIE_CLICK, FilterServer_Activate )
 
 	//Add event handlers for the server buttons
 	//Clear buttontext
@@ -87,20 +107,100 @@ void function InitR5RServerBrowserPanel( var panel )
 	foreach ( var elem in serverbuttons ) {
 		RuiSetString( Hud_GetRui( elem ), "buttonText", "")
 		Hud_AddEventHandler( elem, UIE_CLICK, ServerBrowser_ServerBtnClicked )
+		Hud_AddEventHandler( elem, UIE_DOUBLECLICK, ServerBrowser_ServerBtnDoubleClicked )
 	}
 
 	//Reset Server Panel
 	ServerBrowser_NoServers(false)
-	ServerBrowser_SelectServer(-1, "", "", "", "")
+	ServerBrowser_SelectServer(-1)
 	ServerBrowser_ResetLabels()
 
-	// Set servercount, playercount, pages to none
-	Hud_SetText( Hud_GetChild( file.panel, "PlayersCount"), "Players: 0")
-	Hud_SetText( Hud_GetChild( file.panel, "ServersCount"), "Servers: 0")
-	Hud_SetText (Hud_GetChild( file.panel, "Pages" ), "  Page: 0/0  ")
+	file.m_vSelectedServer.svServerID = -1
+	file.m_vSelectedServer.svServerName = "Please select a server from the list"
+	file.m_vSelectedServer.svMapName = "error"
+	file.m_vSelectedServer.svPlaylist = "error"
+	file.m_vSelectedServer.svDescription = ""
+	ServerBrowser_UpdateSelectedServerUI()
+	ServerBrowser_UpdateServerPlayerCount()
 
-	Hud_SetText(Hud_GetChild( file.panel, "ServerCurrentPlaylist" ), "" )
-	Hud_SetText(Hud_GetChild( file.panel, "ServerCurrentMap" ), "" )
+	ServerBrowser_UpdateFilterLists()
+	OnBtnFiltersClear()
+}
+
+void function RegisterServerBrowserButtonPressedCallbacks()
+{
+	RegisterButtonPressedCallback( MOUSE_WHEEL_UP , OnScrollUp )
+	RegisterButtonPressedCallback( MOUSE_WHEEL_DOWN , OnScrollDown )
+}
+
+void function UnRegisterServerBrowserButtonPressedCallbacks()
+{
+	DeregisterButtonPressedCallback( MOUSE_WHEEL_UP , OnScrollUp )
+	DeregisterButtonPressedCallback( MOUSE_WHEEL_DOWN , OnScrollDown )
+}
+
+void function ServerBrowser_UpdateFilterLists()
+{
+	if(!IsLobby())
+		return
+
+	if(Hud_GetDialogListItemCount(Hud_GetChild( file.panel, "SwtBtnSelectMap" )) == 0)
+	{
+		array<string> maps = ["Any"]
+		maps.extend(GetAvailableMaps())
+		filterArguments.filterMaps = maps
+		int id = 0
+		foreach ( string map in maps )
+		{
+			Hud_DialogList_AddListItem( Hud_GetChild( file.panel, "SwtBtnSelectMap" ) , map, string( id ) )
+			id++
+		}
+	}
+
+	if(Hud_GetDialogListItemCount(Hud_GetChild( file.panel, "SwtBtnSelectGamemode" )) == 0)
+	{
+		array<string> playlists = ["Any"]
+		playlists.extend(GetVisiblePlaylists())
+		filterArguments.filterGamemodes = playlists
+		int id = 0
+		foreach( string mode in playlists )
+		{
+			Hud_DialogList_AddListItem( Hud_GetChild( file.panel, "SwtBtnSelectGamemode" ) , mode, string( id ) )
+			id++
+		}
+	}
+}
+
+array<string> function GetVisiblePlaylists()
+{
+	array<string> m_vPlaylists
+
+	//Setup available playlists array
+	foreach( string playlist in GetAvailablePlaylists())
+	{
+		//Check playlist visibility
+		if(!GetPlaylistVarBool( playlist, "visible", false ))
+			continue
+
+		//Add playlist to the array
+		m_vPlaylists.append(playlist)
+	}
+
+	return m_vPlaylists
+}
+
+void function OnBtnFiltersClear()
+{
+	Hud_SetText( Hud_GetChild( file.panel, "BtnServerSearch" ), "" )
+	filterArguments.useSearch = false
+	filterArguments.searchTerm = ""
+	filterArguments.filterGamemode = "Any"
+	filterArguments.filterMap = "Any"
+	filterArguments.hideEmpty = false
+
+	SetConVarBool( "grx_hasUnknownItems", false )
+	SetConVarInt( "match_rankedSwitchETA", 0 )
+	SetConVarInt( "match_rankedMaxPing", 0 )
 }
 
 ////////////////////////////////////
@@ -109,45 +209,65 @@ void function InitR5RServerBrowserPanel( var panel )
 //
 ////////////////////////////////////
 
+void function FilterServer_Activate(var button)
+{
+	OnBtnFiltersClear()
+	thread ServerBrowser_FilterServerList()
+}
+
 void function ServerBrowser_RefreshBtnClicked(var button)
 {
-	RunClientScript("UICallback_RefreshServer")
+	ServerBrowser_RefreshServerListing()
+
+	string filter = Hud_GetUTF8Text( Hud_GetChild( file.panel, "BtnServerSearch" ) )
+	if(filter != "") {
+		filterArguments.useSearch = true
+		thread ServerBrowser_FilterServerList()
+	}
 }
 
 void function ServerBrowser_FilterTextChanged( var button )
 {
-	string filter = Hud_GetUTF8Text( Hud_GetChild( file.panel, "BtnFilterServers" ) )
+	string filter = Hud_GetUTF8Text( Hud_GetChild( file.panel, "BtnServerSearch" ) )
 
-	if(filter != "") {
-		file.IsFiltered = true
-		ServerBrowser_FilterServerList(filter)
-	} else {
-		file.IsFiltered = false
-		ServerBrowser_RefreshServerListing(false)
-	}
+	if(filter != "")
+		filterArguments.useSearch = true
+	else
+		filterArguments.useSearch = false
+
+	filterArguments.searchTerm = filter
+	thread ServerBrowser_FilterServerList()
 }
 
 void function ServerBrowser_ConnectBtnClicked(var button)
 {
 	//If server isnt selected return
-	if(m_vSelectedServer.svServerID == -1)
+	if(file.m_vSelectedServer.svServerID == -1)
 		return
 
 	//Connect to server
-	printf("Connecting to server: (Server ID: " + m_vSelectedServer.svServerID + " | Server Name: " + m_vSelectedServer.svServerName + " | Map: " + m_vSelectedServer.svMapName + " | Playlist: " + m_vSelectedServer.svPlaylist + ")")
-	//SetEncKeyAndConnect(m_vSelectedServer.svServerID)
-	RunClientScript("UICallback_ServerBrowserJoinServer", m_vSelectedServer.svServerID)
+	printf("Connecting to server: (Server ID: " + file.m_vSelectedServer.svServerID + " | Server Name: " + file.m_vSelectedServer.svServerName + " | Map: " + file.m_vSelectedServer.svMapName + " | Playlist: " + file.m_vSelectedServer.svPlaylist + ")")
+	thread ServerBrowser_StartConnection(file.m_vSelectedServer.svServerID)
 }
 
 void function ServerBrowser_ServerBtnClicked(var button)
 {
-	//Get the button id and add it to the pageoffset to get the correct server id
-	int id = Hud_GetScriptID( button ).tointeger() + m_vPages.pOffset
+	array<ServerListing> PageServerList = ServerBrowser_GetCurrentServerListing()
+	//Get the button id and add it to the scroll offset to get the correct server id
+	int id = Hud_GetScriptID( button ).tointeger() + m_vScroll.Offset
 
-	if(file.IsFiltered)
-		ServerBrowser_SelectServer(m_vFilteredServerList[id].svServerID, m_vFilteredServerList[id].svServerName, m_vFilteredServerList[id].svMapName, m_vFilteredServerList[id].svPlaylist, m_vFilteredServerList[id].svDescription)
-	else
-		ServerBrowser_SelectServer(m_vServerList[id].svServerID, m_vServerList[id].svServerName, m_vServerList[id].svMapName, m_vServerList[id].svPlaylist, m_vServerList[id].svDescription)
+	ServerBrowser_SelectServer(PageServerList[id].svServerID)
+}
+
+void function ServerBrowser_ServerBtnDoubleClicked(var button)
+{
+	array<ServerListing> PageServerList = ServerBrowser_GetCurrentServerListing()
+	//Get the button id and add it to the scroll offset to get the correct server id
+	int id = Hud_GetScriptID( button ).tointeger() + m_vScroll.Offset
+
+	ServerBrowser_SelectServer(PageServerList[id].svServerID)
+
+	thread ServerBrowser_StartConnection(id)
 }
 
 ////////////////////////////////////
@@ -156,58 +276,90 @@ void function ServerBrowser_ServerBtnClicked(var button)
 //
 ////////////////////////////////////
 
-void function ServerBrowser_FilterServerList(string filter)
+void function ServerBrowser_FilterServerList()
 {
-	m_vFilteredServerList.clear()
+	if(!IsLobby())
+		return
 
-	for( int i=0; i < m_vServerList.len() && i < SB_MAX_SERVER_PER_PAGE; i++ )
+	wait 0.1
+
+	filterArguments.hideEmpty = GetConVarBool( "grx_hasUnknownItems" )
+	filterArguments.filterMap = filterArguments.filterMaps[GetConVarInt( "match_rankedMaxPing" )]
+	filterArguments.filterGamemode = filterArguments.filterGamemodes[GetConVarInt( "match_rankedSwitchETA" )]
+
+	file.m_vFilteredServerList.clear()
+
+	for ( int i = 0; i < file.m_vServerList.len(); i++ )
 	{
-		if(m_vServerList[i].svServerName.tolower().find( filter.tolower() ) >= 0)
-			m_vFilteredServerList.append(m_vServerList[i])
+		// Filters
+		if ( filterArguments.hideEmpty && file.m_vServerList[i].svCurrentPlayers == 0 )
+			continue;
+
+		if ( filterArguments.filterMap != "Any" && filterArguments.filterMap != file.m_vServerList[i].svMapName )
+			continue;
+
+		if ( filterArguments.filterGamemode != "Any" && filterArguments.filterGamemode != file.m_vServerList[i].svPlaylist )
+			continue;
+		
+		// Search
+		if ( filterArguments.useSearch )
+		{	
+			array<string> sName
+			sName.append( file.m_vServerList[i].svServerName.tolower() )
+			sName.append( file.m_vServerList[i].svMapName.tolower() )
+			sName.append( GetUIMapName(file.m_vServerList[i].svMapName).tolower() )
+			sName.append( file.m_vServerList[i].svPlaylist.tolower() )
+			sName.append( GetUIPlaylistName(file.m_vServerList[i].svPlaylist).tolower() )
+
+			string sTerm = filterArguments.searchTerm.tolower()
+			
+			bool found = false
+			for( int j = 0; j < sName.len(); j++ )
+			{
+				if ( sName[j].find( sTerm ) >= 0 )
+					found = true
+			}
+			
+			if ( !found )
+				continue;
+		}
+		
+		// Server fits our requirements, add it to the list
+		file.m_vFilteredServerList.append(file.m_vServerList[i])
 	}
+
+	UpdateListSliderHeight( float( file.m_vFilteredServerList.len() ) )
+	UpdateListSliderPosition( file.m_vFilteredServerList.len() )
 
 	//Clear Server List Text, Hide no servers found ui, Reset pages
 	ServerBrowser_ResetLabels()
 	ServerBrowser_NoServers(false)
-	m_vPages.pAmount = 0
+	m_vScroll.Offset = 0
 
 	// Get Server Count
-	int svServerCount = m_vFilteredServerList.len()
+	int svServerCount = file.m_vFilteredServerList.len()
 
 	// If no servers then set no servers found ui and return
 	if(svServerCount == 0) {
-		// Show no servers found ui
 		ServerBrowser_NoServers(true)
-
-		// Set selected server to none
-		ServerBrowser_SelectServer(-1, "", "", "", "")
-
-		// Set servercount, playercount, pages to none
+		ServerBrowser_SelectServer(-1)
 		Hud_SetText( Hud_GetChild( file.panel, "PlayersCount"), "Players: 0")
 		Hud_SetText( Hud_GetChild( file.panel, "ServersCount"), "Servers: 0")
-		Hud_SetText (Hud_GetChild( file.panel, "Pages" ), "  Page: 0/0  ")
-
-		// Return as it dosnt need togo past this if no servers are found
 		return
 	}
 
 	// Setup Buttons and labels
-	for( int i=0; i < m_vFilteredServerList.len() && i < SB_MAX_SERVER_PER_PAGE; i++ )
+	for( int i=0; i < file.m_vFilteredServerList.len() && i < SB_MAX_SERVER_PER_PAGE; i++ )
 	{
-		Hud_SetText( Hud_GetChild( file.panel, "ServerName" + i ), m_vFilteredServerList[i].svServerName)
-		Hud_SetText( Hud_GetChild( file.panel, "Playlist" + i ), GetUIPlaylistName(m_vFilteredServerList[i].svPlaylist))
-		Hud_SetText( Hud_GetChild( file.panel, "Map" + i ), GetUIMapName(m_vFilteredServerList[i].svMapName))
-		Hud_SetText( Hud_GetChild( file.panel, "PlayerCount" + i ), m_vFilteredServerList[i].svCurrentPlayers + "/" + m_vFilteredServerList[i].svMaxPlayers)
+		Hud_SetText( Hud_GetChild( file.panel, "ServerName" + i ), file.m_vFilteredServerList[i].svServerName)
+		Hud_SetText( Hud_GetChild( file.panel, "Playlist" + i ), GetUIPlaylistName(file.m_vFilteredServerList[i].svPlaylist))
+		Hud_SetText( Hud_GetChild( file.panel, "Map" + i ), GetUIMapName(file.m_vFilteredServerList[i].svMapName))
+		Hud_SetText( Hud_GetChild( file.panel, "PlayerCount" + i ), file.m_vFilteredServerList[i].svCurrentPlayers + "/" + file.m_vFilteredServerList[i].svMaxPlayers)
 		Hud_SetVisible(Hud_GetChild( file.panel, "ServerButton" + i ), true)
 	}
 
 	// Select first server in the list
-	ServerBrowser_SelectServer(m_vFilteredServerList[0].svServerID, m_vFilteredServerList[0].svServerName, m_vFilteredServerList[0].svMapName, m_vFilteredServerList[0].svPlaylist, m_vFilteredServerList[0].svDescription)
-
-	// Set UI Labels
-	Hud_SetText( Hud_GetChild( file.panel, "PlayersCount"), "Players: " + m_vAllPlayers)
-	Hud_SetText( Hud_GetChild( file.panel, "ServersCount"), "Servers: " + m_vServerList.len())
-	Hud_SetText (Hud_GetChild( file.panel, "Pages" ), "  Page: 1/" + (m_vPages.pAmount + 1) + "  ")
+	ServerBrowser_SelectServer(file.m_vFilteredServerList[0].svServerID)
 }
 
 void function ServerBrowser_RefreshServerListing(bool refresh = true)
@@ -215,207 +367,225 @@ void function ServerBrowser_RefreshServerListing(bool refresh = true)
 	if (refresh)
 		RefreshServerList()
 
-	//Clear Server List Text, Hide no servers found ui, Reset pages
+	//Clear Server List Text, Hide no servers found ui
 	ServerBrowser_ResetLabels()
 	ServerBrowser_NoServers(false)
-	m_vPages.pAmount = 0
-	m_vAllPlayers = 0
+	file.m_vAllPlayers = 0
+	file.m_vAllServers = 0
+	m_vScroll.Offset = 0
 
 	// Get Server Count
-	int svServerCount = GetServerCount()
-
-	// If no servers then set no servers found ui and return
-	if(svServerCount == 0) {
-		// Show no servers found ui
+	file.m_vAllServers = GetServerCount()
+	if(file.m_vAllServers == 0) {
 		ServerBrowser_NoServers(true)
-
-		// Set selected server to none
-		ServerBrowser_SelectServer(-1, "", "", "", "")
-
-		// Set servercount, playercount, pages to none
+		ServerBrowser_SelectServer(-1)
 		Hud_SetText( Hud_GetChild( file.panel, "PlayersCount"), "Players: 0")
 		Hud_SetText( Hud_GetChild( file.panel, "ServersCount"), "Servers: 0")
-		Hud_SetText (Hud_GetChild( file.panel, "Pages" ), "  Page: 0/0  ")
-
-		// Return as it dosnt need togo past this if no servers are found
 		return
 	}
 
 	// Get Server Array
-	m_vServerList = ServerBrowser_GetArray(svServerCount)
+	file.m_vServerList = ServerBrowser_GetArray(file.m_vAllServers)
+	UpdateListSliderHeight( float( file.m_vServerList.len() ) )
+	UpdateListSliderPosition( file.m_vServerList.len() )
 
 	// Setup Buttons and labels
-	for( int i=0; i < m_vServerList.len() && i < SB_MAX_SERVER_PER_PAGE; i++ )
+	for( int i=0; i < file.m_vServerList.len() && i < SB_MAX_SERVER_PER_PAGE; i++ )
 	{
-		Hud_SetText( Hud_GetChild( file.panel, "ServerName" + i ), m_vServerList[i].svServerName)
-		Hud_SetText( Hud_GetChild( file.panel, "Playlist" + i ), GetUIPlaylistName(m_vServerList[i].svPlaylist))
-		Hud_SetText( Hud_GetChild( file.panel, "Map" + i ), GetUIMapName(m_vServerList[i].svMapName))
-		Hud_SetText( Hud_GetChild( file.panel, "PlayerCount" + i ), m_vServerList[i].svCurrentPlayers + "/" + m_vServerList[i].svMaxPlayers)
+		Hud_SetText( Hud_GetChild( file.panel, "ServerName" + i ), file.m_vServerList[i].svServerName)
+		Hud_SetText( Hud_GetChild( file.panel, "Playlist" + i ), GetUIPlaylistName(file.m_vServerList[i].svPlaylist))
+		Hud_SetText( Hud_GetChild( file.panel, "Map" + i ), GetUIMapName(file.m_vServerList[i].svMapName))
+		Hud_SetText( Hud_GetChild( file.panel, "PlayerCount" + i ), file.m_vServerList[i].svCurrentPlayers + "/" + file.m_vServerList[i].svMaxPlayers)
 		Hud_SetVisible(Hud_GetChild( file.panel, "ServerButton" + i ), true)
 
-		m_vAllPlayers += m_vServerList[i].svCurrentPlayers
+		file.m_vAllPlayers += file.m_vServerList[i].svCurrentPlayers
 	}
 
 	// Select first server in the list
-	ServerBrowser_SelectServer(m_vServerList[0].svServerID, m_vServerList[0].svServerName, m_vServerList[0].svMapName, m_vServerList[0].svPlaylist, m_vServerList[0].svDescription)
+	ServerBrowser_SelectServer(file.m_vServerList[0].svServerID)
+	ServerBrowser_UpdateServerPlayerCount()
 
-	// Set UI Labels
-	Hud_SetText( Hud_GetChild( file.panel, "PlayersCount"), "Players: " + m_vAllPlayers)
-	Hud_SetText( Hud_GetChild( file.panel, "ServersCount"), "Servers: " + svServerCount)
-	Hud_SetText (Hud_GetChild( file.panel, "Pages" ), "  Page: 1/" + (m_vPages.pAmount + 1) + "  ")
-
-	string filter = Hud_GetUTF8Text( Hud_GetChild( file.panel, "BtnFilterServers" ) )
-	if(filter != "") {
-		file.IsFiltered = true
-		ServerBrowser_FilterServerList(filter)
-	}
+	ServerBrowser_UpdateFilterLists()
+	OnBtnFiltersClear()
+	thread ServerBrowser_FilterServerList()
 }
 
-void function ServerBrowser_NextPage(var button)
+//Used scroll code from northstar.
+void function OnScrollDown( var button )
 {
-	//If Pages is 0 then return
-	//or if is on the last page
-	if(m_vPages.pAmount == 0 || m_vPages.pCurrent == m_vPages.pAmount )
+	array<ServerListing> PageServerList = ServerBrowser_GetCurrentServerListing()
+
+	m_vScroll.Offset += 1
+	if (m_vScroll.Offset + SB_MAX_SERVER_PER_PAGE > PageServerList.len()) {
+		m_vScroll.Offset = PageServerList.len() - SB_MAX_SERVER_PER_PAGE
+	}
+
+	if ( m_vScroll.Offset < 0 ) {
+		m_vScroll.Offset = 0
+	}
+
+	UpdateShownPage()
+	UpdateListSliderPosition( PageServerList.len() )
+}
+
+void function OnScrollUp( var button )
+{
+	array<ServerListing> PageServerList = ServerBrowser_GetCurrentServerListing()
+
+	m_vScroll.Offset -= 1
+	if ( m_vScroll.Offset < 0 ) {
+		m_vScroll.Offset = 0
+	}
+
+	UpdateShownPage()
+	UpdateListSliderPosition( PageServerList.len() )
+}
+
+void function UpdateShownPage()
+{
+	array<ServerListing> PageServerList = ServerBrowser_GetCurrentServerListing()
+
+	if(PageServerList.len() == 0)
 		return
 
 	// Reset Server Labels
 	ServerBrowser_ResetLabels()
 
-	// Set current page to next page
-	m_vPages.pCurrent++
+	m_vScroll.End = m_vScroll.Offset + SB_MAX_SERVER_PER_PAGE
 
-	// If current page is greater then last page set to last page
-	if(m_vPages.pCurrent > m_vPages.pAmount)
-		m_vPages.pCurrent = m_vPages.pAmount
-
-	//Set Start ID / End ID / and ID Offset
-	m_vPages.pStart = m_vPages.pCurrent * SB_MAX_SERVER_PER_PAGE
-	m_vPages.pEnd = m_vPages.pStart + SB_MAX_SERVER_PER_PAGE
-	m_vPages.pOffset = m_vPages.pCurrent * SB_MAX_SERVER_PER_PAGE
-
-	// Check if m_vPages.pEnd is greater then actual amount of servers
-	if(m_vPages.pEnd > m_vServerList.len())
-		m_vPages.pEnd = m_vServerList.len()
+	if(PageServerList.len() < SB_MAX_SERVER_PER_PAGE)
+		m_vScroll.End = PageServerList.len()
 
 	// "id" is diffrent from "i" and is used for setting UI elements
 	// "i" is used for server id
 	int id = 0
-	for( int i=m_vPages.pStart; i < m_vPages.pEnd; i++ ) {
-		Hud_SetText( Hud_GetChild( file.panel, "ServerName" + id ), m_vServerList[i].svServerName)
-		Hud_SetText( Hud_GetChild( file.panel, "Playlist" + id ), GetUIPlaylistName(m_vServerList[i].svPlaylist))
-		Hud_SetText( Hud_GetChild( file.panel, "Map" + id ), GetUIMapName(m_vServerList[i].svMapName))
-		Hud_SetText( Hud_GetChild( file.panel, "PlayerCount" + id ), m_vServerList[i].svCurrentPlayers + "/" + m_vServerList[i].svMaxPlayers)
+	for( int i=m_vScroll.Offset; i < m_vScroll.End; i++ ) {
+		Hud_SetText( Hud_GetChild( file.panel, "ServerName" + id ), PageServerList[i].svServerName)
+		Hud_SetText( Hud_GetChild( file.panel, "Playlist" + id ), GetUIPlaylistName(PageServerList[i].svPlaylist))
+		Hud_SetText( Hud_GetChild( file.panel, "Map" + id ), GetUIMapName(PageServerList[i].svMapName))
+		Hud_SetText( Hud_GetChild( file.panel, "PlayerCount" + id ), PageServerList[i].svCurrentPlayers + "/" + PageServerList[i].svMaxPlayers)
 		Hud_SetVisible(Hud_GetChild( file.panel, "ServerButton" + id ), true)
 		id++
 	}
 
-	// Set current page ui
-	Hud_SetText(Hud_GetChild( file.panel, "Pages" ), "  Page:" + (m_vPages.pCurrent + 1) + "/" + (m_vPages.pAmount + 1) + "  ")
+	UpdateListSliderHeight( float( PageServerList.len() ) )
 }
 
-void function ServerBrowser_PrevPage(var button)
+void function UpdateListSliderPosition( int servers )
 {
-	//If Pages is 0 then return
-	//or if is one the first page
-	if(m_vPages.pAmount == 0 || m_vPages.pCurrent == 0)
+	var sliderButton = Hud_GetChild( file.panel , "BtnServerListSlider" )
+	var sliderPanel = Hud_GetChild( file.panel , "BtnServerListSliderPanel" )
+	var movementCapture = Hud_GetChild( file.panel , "MouseMovementCapture" )
+
+	float minYPos = 0.0 * ( GetScreenSize().height / 1080.0 )
+	float useableSpace = (550.0 * ( GetScreenSize().height / 1080.0 ) - Hud_GetHeight( sliderPanel ) )
+
+	float jump = minYPos - ( useableSpace / ( float( servers ) - SB_MAX_SERVER_PER_PAGE ) * m_vScroll.Offset )
+
+	if ( jump > minYPos ) jump = minYPos
+
+	Hud_SetPos( sliderButton , -1, jump )
+	Hud_SetPos( sliderPanel , -1, jump )
+	Hud_SetPos( movementCapture , -1, jump )
+}
+
+
+void function UpdateListSliderHeight( float servers )
+{
+	var sliderButton = Hud_GetChild( file.panel , "BtnServerListSlider" )
+	var sliderPanel = Hud_GetChild( file.panel , "BtnServerListSliderPanel" )
+	var movementCapture = Hud_GetChild( file.panel , "MouseMovementCapture" )
+
+	float maxHeight = 550.0 * ( GetScreenSize().height / 1080.0 )
+	float minHeight = 80.0 * ( GetScreenSize().height / 1080.0 )
+
+	float height = maxHeight * ( SB_MAX_SERVER_PER_PAGE / servers )
+
+	if ( height > maxHeight ) height = maxHeight
+	if ( height < minHeight ) height = minHeight
+
+	Hud_SetHeight( sliderButton , height )
+	Hud_SetHeight( sliderPanel , height )
+	Hud_SetHeight( movementCapture , height )
+}
+
+void function UpdateMouseDeltaBuffer( int x, int y )
+{
+	mouseDeltaBuffer.deltaX += x
+	mouseDeltaBuffer.deltaY += y
+
+	SliderBarUpdate()
+}
+
+void function FlushMouseDeltaBuffer()
+{
+	mouseDeltaBuffer.deltaX = 0
+	mouseDeltaBuffer.deltaY = 0
+}
+
+
+void function SliderBarUpdate()
+{
+	array<ServerListing> PageServerList = ServerBrowser_GetCurrentServerListing()
+
+	if ( PageServerList.len() <= SB_MAX_SERVER_PER_PAGE )
+	{
+		FlushMouseDeltaBuffer()
 		return
-
-	// Reset Server Labels
-	ServerBrowser_ResetLabels()
-
-	// Set current page to prev page
-	m_vPages.pCurrent--
-
-	// If current page is less then first page set to first page
-	if(m_vPages.pCurrent < 0)
-		m_vPages.pCurrent = 0
-
-	//Set Start ID / End ID / and ID Offset
-	m_vPages.pStart = m_vPages.pCurrent * SB_MAX_SERVER_PER_PAGE
-	m_vPages.pEnd = m_vPages.pStart + SB_MAX_SERVER_PER_PAGE
-	m_vPages.pOffset = m_vPages.pCurrent * SB_MAX_SERVER_PER_PAGE
-
-	// Check if m_vPages.pEnd is greater then actual amount of servers
-	if(m_vPages.pEnd > m_vServerList.len())
-		m_vPages.pEnd = m_vServerList.len()
-
-	// "id" is diffrent from "i" and is used for setting UI elements
-	// "i" is used for server id
-	int id = 0
-	for( int i=m_vPages.pStart; i < m_vPages.pEnd; i++ ) {
-		Hud_SetText( Hud_GetChild( file.panel, "ServerName" + id ), m_vServerList[i].svServerName)
-		Hud_SetText( Hud_GetChild( file.panel, "Playlist" + id ), GetUIPlaylistName(m_vServerList[i].svPlaylist))
-		Hud_SetText( Hud_GetChild( file.panel, "Map" + id ), GetUIMapName(m_vServerList[i].svMapName))
-		Hud_SetText( Hud_GetChild( file.panel, "PlayerCount" + id ), m_vServerList[i].svCurrentPlayers + "/" + m_vServerList[i].svMaxPlayers)
-		Hud_SetVisible(Hud_GetChild( file.panel, "ServerButton" + id ), true)
-		id++
 	}
 
-	// Set current page ui
-	Hud_SetText(Hud_GetChild( file.panel, "Pages" ), "  Page:" + (m_vPages.pCurrent + 1) + "/" + (m_vPages.pAmount + 1) + "  ")
+	var sliderButton = Hud_GetChild( file.panel , "BtnServerListSlider" )
+	var sliderPanel = Hud_GetChild( file.panel , "BtnServerListSliderPanel" )
+	var movementCapture = Hud_GetChild( file.panel , "MouseMovementCapture" )
+
+	Hud_SetFocused( sliderButton )
+
+	float minYPos = 0.0 * ( GetScreenSize().height / 1080.0 )
+	float maxHeight = 550.0  * ( GetScreenSize().height / 1080.0 )
+	float maxYPos = minYPos - ( maxHeight - Hud_GetHeight( sliderPanel ) )
+	float useableSpace = ( maxHeight - Hud_GetHeight( sliderPanel ) )
+
+	float jump = minYPos - ( useableSpace / ( float( PageServerList.len() ) ) )
+
+	// got local from official respaw scripts, without untyped throws an error
+	local pos =	Hud_GetPos( sliderButton )[1]
+	local newPos = pos - mouseDeltaBuffer.deltaY
+	FlushMouseDeltaBuffer()
+
+	if ( newPos < maxYPos ) newPos = maxYPos
+	if ( newPos > minYPos ) newPos = minYPos
+
+	Hud_SetPos( sliderButton , 0, newPos )
+	Hud_SetPos( sliderPanel , 0, newPos )
+	Hud_SetPos( movementCapture , 0, newPos )
+
+	m_vScroll.Offset = -int( ( ( newPos - minYPos ) / useableSpace ) * ( PageServerList.len() - SB_MAX_SERVER_PER_PAGE ) )
+	UpdateShownPage()
 }
 
-array<ServerListing> function ServerBrowser_GetArray(int svServerCount)
+void function ServerBrowser_SelectServer(int id)
 {
-	//Create array for servers to be returned
-	array<ServerListing> ServerList
+	array<ServerListing> PageServerList = ServerBrowser_GetCurrentServerListing()
+	if(PageServerList.len() == 0)
+		id = -1
 
-	//No servers so just return
-	if(svServerCount == 0)
-		return ServerList
 
-	//Set on first row
-	int m_vCurrentRow = 0
-
-	// Add each server to the array
-	for( int i=0; i < svServerCount; i++ ) {
-		//Add Server to array
-		ServerBrowser_AddServerToArray(i, GetServerName(i), GetServerPlaylist(i), GetServerMap(i), GetServerDescription(i), GetServerMaxPlayers(i), GetServerCurrentPlayers(i), ServerList)
-
-		// If server is on final row add a new page
-		if(m_vCurrentRow == SB_MAX_SERVER_PER_PAGE) {
-			m_vPages.pAmount++
-			m_vCurrentRow = 0
-		}
-		m_vCurrentRow++
+	if(id == -1) {
+		file.m_vSelectedServer.svServerID = -1
+		file.m_vSelectedServer.svServerName = "Please select a server from the list"
+		file.m_vSelectedServer.svMapName = "error"
+		file.m_vSelectedServer.svPlaylist = "error"
+		file.m_vSelectedServer.svDescription = ""
+		ServerBrowser_UpdateSelectedServerUI()
+		return
 	}
 
-	//Return Server Listing
-	return ServerList
-}
-
-string function ServerBrowser_NameColored(string name)
-{
-	return StringReplace( name, "--", "^" )
-}
-
-void function ServerBrowser_NoServers(bool show)
-{
-	//Set no servers found ui based on bool
-	Hud_SetVisible(Hud_GetChild( file.panel, "PlayerCountLine" ), !show )
-	Hud_SetVisible(Hud_GetChild( file.panel, "PlaylistLine" ), !show )
-	Hud_SetVisible(Hud_GetChild( file.panel, "MapLine" ), !show )
-	Hud_SetVisible(Hud_GetChild( file.panel, "NoServersLbl" ), show )
-}
-
-void function ServerBrowser_SelectServer(int id, string name, string map, string playlist, string desc)
-{
-	//Set selected server info
-	m_vSelectedServer.svServerID = id
-	m_vSelectedServer.svServerName = name
-	m_vSelectedServer.svMapName = map
-	m_vSelectedServer.svPlaylist = playlist
-	m_vSelectedServer.svDescription = desc
-
-	//Set selected server ui
-	Hud_SetText(Hud_GetChild( file.panel, "ServerCurrentPlaylist" ), "Current Playlist" )
-	Hud_SetText(Hud_GetChild( file.panel, "ServerCurrentMap" ), "Current Map" )
-
-	Hud_SetText(Hud_GetChild( file.panel, "ServerNameInfoEdit" ), name )
-	Hud_SetText(Hud_GetChild( file.panel, "ServerCurrentMapEdit" ), GetUIMapName(map) )
-	Hud_SetText(Hud_GetChild( file.panel, "PlaylistInfoEdit" ), GetUIPlaylistName(playlist) )
-	Hud_SetText(Hud_GetChild( file.panel, "ServerDesc" ), desc )
-	RuiSetImage( Hud_GetRui( Hud_GetChild( file.panel, "ServerMapImg" ) ), "loadscreenImage", GetUIMapAsset(map) )
+	file.m_vSelectedServer.svServerID = file.m_vServerList[id].svServerID
+	file.m_vSelectedServer.svServerName = file.m_vServerList[id].svServerName
+	file.m_vSelectedServer.svMapName = file.m_vServerList[id].svMapName
+	file.m_vSelectedServer.svPlaylist = file.m_vServerList[id].svPlaylist
+	file.m_vSelectedServer.svDescription = file.m_vServerList[id].svDescription
+	ServerBrowser_UpdateSelectedServerUI()
 }
 
 void function ServerBrowser_ResetLabels()
@@ -435,46 +605,75 @@ void function ServerBrowser_ResetLabels()
 	}
 }
 
-void function ServerBrowser_AddServerToArray(int id, string name, string playlist, string map, string desc, int max, int current, array<ServerListing> ServerList)
+array<ServerListing> function ServerBrowser_GetArray(int svServerCount)
 {
-	//Setup new server
-	ServerListing Server
-	Server.svServerID = id
-	Server.svServerName = name
-	Server.svPlaylist = playlist
-	Server.svMapName = map
-	Server.svDescription = desc
-	Server.svMaxPlayers = max
-	Server.svCurrentPlayers = current
+	//Create array for servers to be returned
+	array<ServerListing> ServerList
 
-	//Add new server to array
-	ServerList.append(Server)
+	//No servers so just return
+	if(svServerCount == 0)
+		return ServerList
+
+	// Add each server to the array
+	for( int i=0; i < svServerCount; i++ ) {
+		ServerListing Server
+		Server.svServerID = i
+		Server.svServerName = GetServerName(i)
+		Server.svPlaylist = GetServerPlaylist(i)
+		Server.svMapName = GetServerMap(i)
+		Server.svDescription = GetServerDescription(i)
+		Server.svMaxPlayers = GetServerMaxPlayers(i)
+		Server.svCurrentPlayers = GetServerCurrentPlayers(i)
+		ServerList.append(Server)
+	}
+
+	//Return Server Listing
+	return ServerList
 }
 
-void function ServerBrowser_RefreshServersForEveryone()
+array<ServerListing> function ServerBrowser_GetCurrentServerListing()
 {
-	RunClientScript("UICallback_RefreshServer")
-}
+	array<ServerListing> PageServerList = file.m_vServerList
+	if(file.IsFiltered)
+		PageServerList = file.m_vFilteredServerList
 
-void function ServerBrowser_EnableRefreshButton( bool show)
-{
-	Hud_SetVisible(Hud_GetChild( file.panel, "RefreshServers" ), show)
-	Hud_SetVisible(Hud_GetChild( file.panel, "RefreshServersText" ), show)
-}
-
-void function ServerBrowser_JoinServer(int id)
-{
-	thread ServerBrowser_StartConnection(id)
+	return PageServerList
 }
 
 void function ServerBrowser_StartConnection(int id)
 {
 	Hud_SetVisible(Hud_GetChild( file.menu, "R5RConnectingPanel"), true)
-	Hud_SetText(Hud_GetChild( GetPanel( "R5RConnectingPanel" ), "ServerName" ), m_vServerList[id].svServerName )
+	Hud_SetText(Hud_GetChild( GetPanel( "R5RConnectingPanel" ), "ServerName" ), file.m_vServerList[id].svServerName )
 
 	wait 2
 
 	Hud_SetVisible(Hud_GetChild( file.menu, "R5RConnectingPanel"), false)
 
 	SetEncKeyAndConnect(id)
+}
+
+void function ServerBrowser_UpdateSelectedServerUI()
+{
+	Hud_SetText(Hud_GetChild( file.panel, "ServerCurrentPlaylist" ), "Current Playlist" )
+	Hud_SetText(Hud_GetChild( file.panel, "ServerCurrentMap" ), "Current Map" )
+	Hud_SetText(Hud_GetChild( file.panel, "ServerNameInfoEdit" ), file.m_vSelectedServer.svServerName )
+	Hud_SetText(Hud_GetChild( file.panel, "ServerCurrentMapEdit" ), GetUIMapName(file.m_vSelectedServer.svMapName) )
+	Hud_SetText(Hud_GetChild( file.panel, "PlaylistInfoEdit" ), GetUIPlaylistName(file.m_vSelectedServer.svPlaylist) )
+	Hud_SetText(Hud_GetChild( file.panel, "ServerDesc" ), file.m_vSelectedServer.svDescription )
+	RuiSetImage( Hud_GetRui( Hud_GetChild( file.panel, "ServerMapImg" ) ), "loadscreenImage", GetUIMapAsset(file.m_vSelectedServer.svMapName) )
+}
+
+void function ServerBrowser_NoServers(bool show)
+{
+	//Set no servers found ui based on bool
+	Hud_SetVisible(Hud_GetChild( file.panel, "PlayerCountLine" ), !show )
+	Hud_SetVisible(Hud_GetChild( file.panel, "PlaylistLine" ), !show )
+	Hud_SetVisible(Hud_GetChild( file.panel, "MapLine" ), !show )
+	Hud_SetVisible(Hud_GetChild( file.panel, "NoServersLbl" ), show )
+}
+
+void function ServerBrowser_UpdateServerPlayerCount()
+{
+	Hud_SetText( Hud_GetChild( file.panel, "PlayersCount"), "Players: " + file.m_vAllPlayers)
+	Hud_SetText( Hud_GetChild( file.panel, "ServersCount"), "Servers: " + file.m_vAllServers)
 }
